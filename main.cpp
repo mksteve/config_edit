@@ -3,6 +3,7 @@
 #include <map>
 #include <vector>
 #include <fstream>
+#include <iostream>
 #include "json_lite.h"
 
 //
@@ -26,24 +27,37 @@
 // mLine is the line which was parsed to get this data.
 class Filter
 {
-private:
+
+public:
   std::string mClass;
   std::string mKey;
   std::string mValue;
   std::string mLine;
   bool mEmpty;
-public:
   Filter()
     : mEmpty( true )
   {}
-  Filter( const char * fltClass, const char * key
-	  , const char * value, const char * line )
+  Filter( const std::string & fltClass, const std::string & key
+	  , const std::string & value, const std::string & line )
     : mClass( fltClass )
     , mKey( key )
     , mValue( value )
     , mLine( line )
     , mEmpty( false )
   {
+  }
+  Filter( const char *keyValue, const char * fltClass )
+    : mClass( fltClass )
+  {
+    std::string str = keyValue;
+    size_t equals = str.find( '=' );
+    if( equals != std::string::npos ){
+      mKey = str.substr( 0,equals );
+      mValue = str.substr( equals+1);
+    } else {
+      mKey = keyValue;
+    }
+    mLine = "[" + str + "]";
   }
   static bool parseFilter( const std::string & line, std::string &key,
 		      std::string &value)
@@ -100,13 +114,76 @@ public:
   std::vector< Filter > mSelection;  // which filters are active...
   Filter mEntryFilter;
   std::vector< std::string > mLines;
-  void sectionChange( const std::string & line, const ConfigSetup & config );
+  bool sectionChange( const std::string & line, const ConfigSetup & config );
+  bool matches( const std::vector< Filter> & requiredFilters )
+  {
+    bool failed = false;
+    std::vector<Filter> copy = requiredFilters;
+    if( copy.size() == 0 ){
+      if( mSelection.size() == 0 ) {
+	return true;
+      }
+      if( isAll() ){
+	return true;
+      }
+      return false;
+    }
+    if( copy.size() == 1 && mSelection.size() == 0 ){
+      if( copy[0].mClass == "super" && copy[0].mKey == "all" ) {
+	return true;
+      }
+      return false;
+    }
+    for( auto flt = mSelection.begin(); failed == false && flt != mSelection.end(); flt++ ){
+      bool found = false;
+      for( auto cpFlt = copy.begin(); found == false && cpFlt != copy.end(); cpFlt++ ){
+	if( cpFlt->mClass == flt->mClass &&
+	    cpFlt->mKey == flt->mKey &&
+	    cpFlt->mValue == flt->mValue ){
+	  found = true;
+	  copy.erase( cpFlt );
+	  break;
+	}
+      }
+      if( found == false ){
+	failed = true;
+      }
+    }
+    return !failed;
+  }
+  bool isAll()
+  {
+    if( mSelection.size() == 0 ) return true;
+    if( mSelection.size() > 1 ) return false;
+    if( mSelection[0].mClass == "super" && mSelection[0].mKey == "all" ){
+      return true;
+    }
+    return false;
+  }
 };
 
 class WholeFile
 {
 public:
   std::vector<Section> mSections;
+  void resetToAll()
+  {
+    if( mSections.size() == 0 ) return;
+    Section & last = mSections[ mSections.size() -1 ];
+    if( last.isAll() ) return;
+    Section all;
+    Filter allFlt( "super", "all", "", "[all]" );
+    all.mEntryFilter = allFlt;
+    all.mSelection.push_back( allFlt );
+  }
+  void addLine( const std::string & line )
+  {
+    if( mSections.size() == 0 ){
+      Section newSection;
+      mSections.push_back(newSection);
+    }
+    mSections[mSections.size()-1].mLines.push_back( line );
+  }
 };
 
 
@@ -120,9 +197,9 @@ const char * config =
   R"##config( {
   "platform"  : [ "pi0", "pi0w" , "pi1", "pi2", "pi3", "pi3+", "pi4" ],
   "super" :     [ "all", "none" ],
-  "display" :   [ "edid" ],
+  "edid" :      [ "edid" ],
   "cpuserial" : [ "0x%x" ], 
-  "HDMI" :      [ "HDMI:0", "HDMI:1" ],
+  "hdmi" :      [ "HDMI:0", "HDMI:1" ],
   "gpio" :      [ "gpio%d" ] 
   })##config";
 class Description
@@ -148,6 +225,10 @@ public:
   {
     return mBase;
   }
+  const std::string &param() const
+  {
+    return mParam;
+  }
 };
 
 
@@ -161,22 +242,24 @@ public:
   {}
   ConfigValue()
   {}
-  bool isValid( const std::string & key )
+  bool isValid( const std::string & key ) const
   {
-    if( mBase == mKey ) return true;
-    if( key.substr( 0,mBase.length() ) != mBase ){
+    if( mDesc.base() == key ) return true;
+    std::string base = mDesc.base();
+    std::string param = mDesc.param();
+    if( key.substr( 0, base.length() ) != base ){
       return false;
     }
-    if( mParam.length() == 0 ) return false;
-    if( mParam == "d" ){
-      size_t pos = key.find_first_not_of( "0123456789", mBase.length() );
-      if( pos == string::npos ){
+    if( param.length() == 0 ) return false;
+    if( param == "d" ){
+      size_t pos = key.find_first_not_of( "0123456789", base.length() );
+      if( pos == std::string::npos ){
 	return true;
       }
-    } else if( mParam == "x" ){
+    } else if( param == "x" ){
       size_t pos = key.find_first_not_of( "0123456789abcdefABCDEF",
-					  mBase.length() );
-      if( pos == string::npos ){
+					  base.length() );
+      if( pos == std::string::npos ){
 	return true;
       }
     }
@@ -315,7 +398,7 @@ public:
     return false;
   }
   
-  bool findValue( const std::string & key, ConfigValue & val )
+  bool findValue( const std::string & key, ConfigValue & val ) const
   {
     std::string _key = key;
     while( _key.length() > 0 ){
@@ -348,12 +431,15 @@ struct option config_edit_options[] =
   {
    { "platform", required_argument, nullptr, 'p'},
    { "edid",     required_argument, nullptr, 'e'},
-   { "all",      no_argument,       nullptr, 0 },
+   { "all",      no_argument,       nullptr, 0 }, 
    { "add",      required_argument, nullptr, 'a'},
    { "remove",   required_argument, nullptr, 'r'},
    { "comment",  required_argument, nullptr, 'c'},
    { "file",     required_argument, nullptr, 'f'},
    { "print",    no_argument,       nullptr, 0 },
+   { "gpio",     required_argument, nullptr, 'g' },
+   { "config",   required_argument, nullptr, 0 },
+   { "hdmi",     required_argument, nullptr, 0 },
    { nullptr,    0,                 nullptr, 0 },
   };
 
@@ -365,29 +451,37 @@ bool Section::sectionChange( const std::string & line,
   if( Filter::parseFilter( line, key,value ) ){
     ConfigValue val;
     if( config.findValue( key, val ) ){
-      if( val.mClass == "super" ) { // boo special case.  Remove all other filters
+      if( val.mClass == "super" ) { // Special case.
+	                            // Remove all other filters
+	mSelection.clear();
       } else {
-	
+	std::vector<Filter> newSelections;
+	for( auto it = mSelection.begin(); it != mSelection.end(); it++ ){
+	  if( it->mClass != val.mClass ){ // keep all filters not current
+	    newSelections.push_back( *it );
+	  }
+	}
+	std::swap( mSelection, newSelections );
       }
+      Filter flt( val.mClass, key, value, line );
+      mEntryFilter = flt;
+      mSelection.push_back( flt );
+      //for( auto it = mSelection.begin(); it != mSelection.end(); it++ ){
+      //printf( "%s(%s) - %s\n", it->mKey.c_str(),
+      //	it->mValue.c_str(),
+      //	it->mClass.c_str() );
+      //}
+      
+      return true;
     }
+    
   } 
   return false;
 }
 
 using namespace json_lite;
-void displayConfig( ConfigSetup & setup, const std::string & fileName )
-{
-  std::ifstream file;
-  file.open( fileName );
-  std::string line;
-  while( std::getline(file, line ) ){
-    if( line.length() && line[0] == '[' && line.find( ']' ) != std::string::npos ){
-      printf( "filter %s\n", line.c_str() );
-    } else {
-      printf( "%s\n", line.c_str() );
-    }
-  }
-}
+
+
 WholeFile readWholeFile( std::istream & input, ConfigSetup & config)
 {
   std::string line;
@@ -399,23 +493,116 @@ WholeFile readWholeFile( std::istream & input, ConfigSetup & config)
       file.mSections.push_back( currentSection );
       currentSection.mLines.clear(); // start a new section
       currentSection.sectionChange( line, config );
-      printf( "filter %s\n", line.c_str() );
     } else {
       currentSection.mLines.push_back( line );
-      printf( "%s\n", line.c_str() );
     }
   }
+  file.mSections.push_back( currentSection );
   return file;
 }
+void doDisplayConfig( const WholeFile & theFile )
+{
+  for( auto sections = theFile.mSections.begin(); sections != theFile.mSections.end() ; sections++ ){
+    if( sections->mEntryFilter.mEmpty == false ){
+      std::cout << sections->mEntryFilter.mLine << std::endl;
+    }
 
+    if( sections->mSelection.size() ){
+      std::cout << "##################################################" << std::endl;
+      std::cout << "# Active filters" << std::endl;
+      for( auto flt = sections->mSelection.begin(); flt != sections->mSelection.end(); flt++ ){
+	std::cout << "# " << flt->mClass << " " << flt->mKey << " " << flt->mValue << std::endl;
+      }
+      std::cout << "##################################################" << std::endl;
+    }
+    for( auto line = sections->mLines.begin(); line != sections->mLines.end(); line++ ){
+      std::cout << *line << std::endl;
+    }
+  }
+
+  
+}
+void displayConfig( ConfigSetup & setup, const std::string & fileName )
+{
+  std::ifstream file;
+  file.open( fileName );
+  WholeFile theFile = readWholeFile( file, setup );
+  doDisplayConfig( theFile );
+}
+
+struct Actions
+{
+  std::vector< Filter > requiredFilters;
+  std::vector< std::string> addCommands;
+  std::vector< std::string> removeCommands;
+  std::vector< std::string> commentCommands;
+};
+void editConfig( ConfigSetup & cfg, const std::string & fileName, const Actions & actions )
+{
+  WholeFile theFile;
+  {
+    std::ifstream file;
+    file.open( fileName );
+    theFile = readWholeFile( file, cfg );
+  }
+  std::vector< Section>::iterator lastMatch = theFile.mSections.end();
+  for( auto section = theFile.mSections.begin(); section != theFile.mSections.end() ; section++ ){
+    if( section->matches( actions.requiredFilters ) ){
+      std::cerr << "# Section starting with " << section->mEntryFilter.mLine << "Matches" << std::endl;
+      lastMatch = section;
+    }
+  }
+  if( lastMatch != theFile.mSections.end() ){
+    // comments
+    for( auto cmd = actions.commentCommands.begin(); cmd!= actions.commentCommands.end(); cmd ++ ){
+      std::string _c = *cmd;
+      for( auto line = lastMatch->mLines.begin(); line != lastMatch->mLines.end(); lastMatch++ ){
+	std::string _l = *line;
+	if( _l == _c ){
+	  std::string replacement = "#";
+	  replacement += _l;
+	  *line = replacement;
+	}
+      }
+    }
+    // deletes
+    for( auto cmd = actions.removeCommands.begin(); cmd!= actions.removeCommands.end(); cmd ++ ){
+      std::string _c = *cmd;
+      for( auto line = lastMatch->mLines.begin(); line != lastMatch->mLines.end(); lastMatch++ ){
+	std::string _l = *line;
+	if( _l == _c ){
+	  lastMatch->mLines.erase( line );
+	  break;
+	}
+      }
+    }
+    // inserts
+    for( auto cmd = actions.addCommands.begin(); cmd != actions.addCommands.end(); cmd++ ){
+      lastMatch->mLines.push_back( *cmd );
+    }
+  } else {
+    theFile.resetToAll();
+    Section currentSection;
+    for( auto flt = actions.requiredFilters.begin(); flt != actions.requiredFilters.end(); flt++ ){
+      currentSection.sectionChange( flt->mLine, cfg);
+      theFile.mSections.push_back( currentSection );
+    }
+    for( auto cmd = actions.addCommands.begin(); cmd != actions.addCommands.end(); cmd++ ){
+      theFile.addLine( *cmd );
+    }
+    
+  }
+  doDisplayConfig( theFile );
+}
 int main( int argc, char * argv[] )
 {
   std::string file = "/boot/config.txt";
   bool bInvalid = false;
   bool bPrintMode = false;
+  Actions actions;
   while ( bInvalid == false) {
     int opt_idx = 0;
-    int c = getopt_long( argc, argv, "p:e:a:r:c:f:", config_edit_options, &opt_idx);
+    int c = getopt_long( argc, argv, "p:e:a:r:c:f:g:", config_edit_options, &opt_idx);
     if( c == -1 ) {
       break;
     }
@@ -432,6 +619,18 @@ int main( int argc, char * argv[] )
 	std::string option = config_edit_options[ opt_idx].name;
 	if( option == "print" ){
 	  bPrintMode = true;
+	} else if( option == "platform" ||
+		   option == "edid" ||
+		   option == "gpio" ||
+		   option == "cpuserial" ){
+	  Filter flt( optarg, option.c_str() );
+	  actions.requiredFilters.push_back( flt );
+	} else if( option == "add" ) {
+	  actions.addCommands.push_back( optarg );
+	} else if ( option == "remove" ) {
+	  actions.removeCommands.push_back( optarg );
+	} else if ( option == "comment" ) {
+	  actions.commentCommands.push_back( optarg );
 	}
 	printf( "Option %s", config_edit_options[ opt_idx].name );
 	if( optarg ){
@@ -446,8 +645,32 @@ int main( int argc, char * argv[] )
     exit( 1 );
   }
   ConfigSetup cfg = buildConfig( config );
+  /////////////////////////////////////////////////////////
+  // ensure all the Filters added to actions are valid.
+  {
+    bool allOk = true;
+    for( auto it = actions.requiredFilters.begin(); allOk == true && it != actions.requiredFilters.end(); it++ ){
+      std::string key = it->mKey;
+      if( it->mValue.length() > 0 ){
+	key+= "=";
+	key+= it->mValue;
+      }
+      ConfigValue tmp;
+      if( !cfg.findValue( it->mKey,tmp ) ){
+	allOk = false;
+	std::cerr << "Invalid filter '" << key << "'" << std::endl;
+      }
+    }
+    if( allOk == false ){
+      return  1;
+    }
+  }
+  //
+  ////////////////////////////////////////////////////////
   if( bPrintMode ){
     displayConfig( cfg, file );
+  } else {
+    editConfig( cfg, file, actions );
   }
   //  test2( config );
   Description desc( "gpio%d" );
