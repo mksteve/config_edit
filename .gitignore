@@ -1,3 +1,5 @@
+config.txt
+config.bak
 config_edit
 *.o
 *~

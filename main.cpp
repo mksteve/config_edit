@@ -500,23 +500,32 @@ WholeFile readWholeFile( std::istream & input, ConfigSetup & config)
   file.mSections.push_back( currentSection );
   return file;
 }
-void doDisplayConfig( const WholeFile & theFile )
+void doDisplayConfig( const WholeFile & theFile,
+		      std::ostream & out, bool bVerbose )
 {
-  for( auto sections = theFile.mSections.begin(); sections != theFile.mSections.end() ; sections++ ){
+  for( auto sections = theFile.mSections.begin();
+       sections != theFile.mSections.end() ; sections++ ){
     if( sections->mEntryFilter.mEmpty == false ){
-      std::cout << sections->mEntryFilter.mLine << std::endl;
+      out << sections->mEntryFilter.mLine << std::endl;
     }
 
-    if( sections->mSelection.size() ){
-      std::cout << "##################################################" << std::endl;
-      std::cout << "# Active filters" << std::endl;
-      for( auto flt = sections->mSelection.begin(); flt != sections->mSelection.end(); flt++ ){
-	std::cout << "# " << flt->mClass << " " << flt->mKey << " " << flt->mValue << std::endl;
+    if( bVerbose ){
+      if( sections->mSelection.size() ){
+	out << "##################################################"
+		  << std::endl;
+	out << "# Active filters" << std::endl;
+	for( auto flt = sections->mSelection.begin();
+	     flt != sections->mSelection.end(); flt++ ){
+	  out << "# " << flt->mClass << " "
+		    << flt->mKey << " " << flt->mValue << std::endl;
+	}
+	out << "##################################################"
+		  << std::endl;
       }
-      std::cout << "##################################################" << std::endl;
     }
-    for( auto line = sections->mLines.begin(); line != sections->mLines.end(); line++ ){
-      std::cout << *line << std::endl;
+    for( auto line = sections->mLines.begin();
+	 line != sections->mLines.end(); line++ ){
+      out << *line << std::endl;
     }
   }
 
@@ -527,7 +536,7 @@ void displayConfig( ConfigSetup & setup, const std::string & fileName )
   std::ifstream file;
   file.open( fileName );
   WholeFile theFile = readWholeFile( file, setup );
-  doDisplayConfig( theFile );
+  doDisplayConfig( theFile, std::cout, true );
 }
 
 struct Actions
@@ -537,62 +546,95 @@ struct Actions
   std::vector< std::string> removeCommands;
   std::vector< std::string> commentCommands;
 };
-void editConfig( ConfigSetup & cfg, const std::string & fileName, const Actions & actions )
+bool editConfig( ConfigSetup & cfg, const std::string & fileName,
+		 const Actions & actions )
 {
   WholeFile theFile;
   {
     std::ifstream file;
     file.open( fileName );
+    if( file.fail() ) return false;
     theFile = readWholeFile( file, cfg );
+    file.close();
   }
+
   std::vector< Section>::iterator lastMatch = theFile.mSections.end();
-  for( auto section = theFile.mSections.begin(); section != theFile.mSections.end() ; section++ ){
+  for( auto section = theFile.mSections.begin();
+       section != theFile.mSections.end() ; section++ ){
     if( section->matches( actions.requiredFilters ) ){
-      std::cerr << "# Section starting with " << section->mEntryFilter.mLine << "Matches" << std::endl;
+      //std::cerr << "# Section starting with "
+      //	<< section->mEntryFilter.mLine << "Matches" << std::endl;
       lastMatch = section;
+      // comments
+      for( auto cmd = actions.commentCommands.begin();
+	   cmd!= actions.commentCommands.end(); cmd ++ ){
+	std::string _c = *cmd;
+	for( auto line = lastMatch->mLines.begin();
+	     line != lastMatch->mLines.end(); line++ ){
+	  std::string _l = *line;
+	  if( _l == _c ){
+	    std::string replacement = "#";
+	    replacement += _l;
+	    *line = replacement;
+	  }
+	}
+      }
+      // deletes
+      for( auto cmd = actions.removeCommands.begin();
+	   cmd!= actions.removeCommands.end(); cmd ++ ){
+	std::string _c = *cmd;
+	for( auto line = lastMatch->mLines.begin();
+	     line != lastMatch->mLines.end(); line++ ){
+	  std::string _l = *line;
+	  if( _l == _c ){
+	    lastMatch->mLines.erase( line );
+	    break;
+	  }
+	}
+      }
     }
   }
   if( lastMatch != theFile.mSections.end() ){
-    // comments
-    for( auto cmd = actions.commentCommands.begin(); cmd!= actions.commentCommands.end(); cmd ++ ){
-      std::string _c = *cmd;
-      for( auto line = lastMatch->mLines.begin(); line != lastMatch->mLines.end(); lastMatch++ ){
-	std::string _l = *line;
-	if( _l == _c ){
-	  std::string replacement = "#";
-	  replacement += _l;
-	  *line = replacement;
-	}
-      }
-    }
-    // deletes
-    for( auto cmd = actions.removeCommands.begin(); cmd!= actions.removeCommands.end(); cmd ++ ){
-      std::string _c = *cmd;
-      for( auto line = lastMatch->mLines.begin(); line != lastMatch->mLines.end(); lastMatch++ ){
-	std::string _l = *line;
-	if( _l == _c ){
-	  lastMatch->mLines.erase( line );
-	  break;
-	}
-      }
-    }
     // inserts
-    for( auto cmd = actions.addCommands.begin(); cmd != actions.addCommands.end(); cmd++ ){
+    for( auto cmd = actions.addCommands.begin();
+	 cmd != actions.addCommands.end(); cmd++ ){
       lastMatch->mLines.push_back( *cmd );
     }
   } else {
     theFile.resetToAll();
     Section currentSection;
-    for( auto flt = actions.requiredFilters.begin(); flt != actions.requiredFilters.end(); flt++ ){
+    for( auto flt = actions.requiredFilters.begin();
+	 flt != actions.requiredFilters.end(); flt++ ){
       currentSection.sectionChange( flt->mLine, cfg);
       theFile.mSections.push_back( currentSection );
     }
-    for( auto cmd = actions.addCommands.begin(); cmd != actions.addCommands.end(); cmd++ ){
+    for( auto cmd = actions.addCommands.begin();
+	 cmd != actions.addCommands.end(); cmd++ ){
       theFile.addLine( *cmd );
     }
     
   }
-  doDisplayConfig( theFile );
+  {
+    std::string bakFile = fileName;
+    std::string::size_type pos = bakFile.find_last_of( '.' );
+    bakFile = bakFile.substr( 0, pos );
+    bakFile += ".bak";
+    remove( bakFile.c_str() );
+    if( rename( fileName.c_str(), bakFile.c_str() ) != 0 ){
+      std::cerr << "Unable to create backup "<< bakFile <<" - "<< strerror(errno) << " aborting" << std::endl;
+      return false;
+    }
+
+    std::ofstream fFile( fileName );
+    if( fFile.fail() ){
+      std::cerr << "Unable to write to new file "
+		<< fileName << " "
+		<< strerror(errno) << std::endl;
+      return false;
+    }
+    doDisplayConfig( theFile, fFile, false );
+  }
+  return true;
 }
 int main( int argc, char * argv[] )
 {
@@ -602,7 +644,8 @@ int main( int argc, char * argv[] )
   Actions actions;
   while ( bInvalid == false) {
     int opt_idx = 0;
-    int c = getopt_long( argc, argv, "p:e:a:r:c:f:g:", config_edit_options, &opt_idx);
+    int c = getopt_long( argc, argv, "p:e:a:r:c:f:g:",
+			 config_edit_options, &opt_idx);
     if( c == -1 ) {
       break;
     }
@@ -632,11 +675,6 @@ int main( int argc, char * argv[] )
 	} else if ( option == "comment" ) {
 	  actions.commentCommands.push_back( optarg );
 	}
-	printf( "Option %s", config_edit_options[ opt_idx].name );
-	if( optarg ){
-	  printf( " %s", optarg );
-	}
-	printf( "\n" );
 	break;
       }
     }
