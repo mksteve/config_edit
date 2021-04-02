@@ -440,6 +440,8 @@ struct option config_edit_options[] =
    { "gpio",     required_argument, nullptr, 'g' },
    { "config",   required_argument, nullptr, 0 },
    { "hdmi",     required_argument, nullptr, 0 },
+   { "keepbackup", no_argument,     nullptr, 0 },
+   { "help",     no_argument,       nullptr, 0 },
    { nullptr,    0,                 nullptr, 0 },
   };
 
@@ -500,7 +502,7 @@ WholeFile readWholeFile( std::istream & input, ConfigSetup & config)
   file.mSections.push_back( currentSection );
   return file;
 }
-void doDisplayConfig( const WholeFile & theFile,
+bool doDisplayConfig( const WholeFile & theFile,
 		      std::ostream & out, bool bVerbose )
 {
   for( auto sections = theFile.mSections.begin();
@@ -529,7 +531,10 @@ void doDisplayConfig( const WholeFile & theFile,
     }
   }
 
-  
+  if( out.fail() ){
+    return false;
+  }
+  return true;
 }
 void displayConfig( ConfigSetup & setup, const std::string & fileName )
 {
@@ -547,7 +552,7 @@ struct Actions
   std::vector< std::string> commentCommands;
 };
 bool editConfig( ConfigSetup & cfg, const std::string & fileName,
-		 const Actions & actions )
+		 const Actions & actions, bool bKeepBackup )
 {
   WholeFile theFile;
   {
@@ -632,9 +637,42 @@ bool editConfig( ConfigSetup & cfg, const std::string & fileName,
 		<< strerror(errno) << std::endl;
       return false;
     }
-    doDisplayConfig( theFile, fFile, false );
+    if( doDisplayConfig( theFile, fFile, false ) == false ){
+      fFile.close();
+      remove( fileName.c_str() );
+      rename( bakFile.c_str(), fileName.c_str() );
+      return false;
+    }
+    if( bKeepBackup == false ){
+      remove( bakFile.c_str() );
+    }
   }
   return true;
+}
+void showHelp(int argc, char * argv[] )
+{
+  using std::cout;
+  using std::endl;
+  cout << "Usage : " << argv[0] << endl;
+  cout << "  -a, --add string        Add string in a section which" << endl;
+  cout << "                          matches the final filter." <<endl;
+  cout << "      --all               Set the filter to all." << endl;
+  cout << "  -c, --comment string    Comment the line 'string' In" << endl;
+  cout << "                          the final filter" << endl;
+  cout << "      --config cfg_json   Use alternative json file for filters" <<endl;
+  cout << "  -e, --edid edid=value   Set the filter to include EDID" << endl;
+  cout << "  -f, --file config_name  Act on config_name instead of " <<endl;
+  cout << "                          config.txt" << endl;
+  cout << "  -g, --gpio gpioX=[0|1]  Set gpio filter" << endl;
+  cout << "      --hdmi  HDMI:[0|1]  Filter for each hdmi [pi4]" << endl;
+  cout << "      --keepbackup        Don't remove .bak file" << endl;
+  cout << "  -p, --platform plt      Set the platform to {pi0, pi0w," << endl;
+  cout << "                          pi1, pi2, pi3, pi3+,pi4}" << endl;
+  cout << "  --print                 Display current config.txt" << endl;
+  cout << "  --remove string        Remove the string from the filter" << endl;
+  cout << endl << endl;
+  cout << "Default configuration is :-" << endl;
+  cout << config << endl;
 }
 int main( int argc, char * argv[] )
 {
@@ -642,6 +680,7 @@ int main( int argc, char * argv[] )
   bool bInvalid = false;
   bool bPrintMode = false;
   Actions actions;
+  bool bKeepBackup = false;
   while ( bInvalid == false) {
     int opt_idx = 0;
     int c = getopt_long( argc, argv, "p:e:a:r:c:f:g:",
@@ -674,12 +713,17 @@ int main( int argc, char * argv[] )
 	  actions.removeCommands.push_back( optarg );
 	} else if ( option == "comment" ) {
 	  actions.commentCommands.push_back( optarg );
+	} else if( option == "keepbackup" ) {
+	  bKeepBackup = true;
+	} else if( option == "help" ){
+	  showHelp( argc, argv );
 	}
 	break;
       }
     }
   }
   if( bInvalid ){
+    showHelp( argc, argv );
     exit( 1 );
   }
   ConfigSetup cfg = buildConfig( config );
@@ -708,7 +752,7 @@ int main( int argc, char * argv[] )
   if( bPrintMode ){
     displayConfig( cfg, file );
   } else {
-    editConfig( cfg, file, actions );
+    editConfig( cfg, file, actions, bKeepBackup );
   }
   //  test2( config );
   Description desc( "gpio%d" );
